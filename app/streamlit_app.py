@@ -244,24 +244,25 @@ def build_pca_figure(
             ),
         ))
 
-    # Centroid X markers
-    if filter_archetype is None:
-        center_text = pca_centroids["archetype"]
-    else:
-        center_text = pca_centroids["archetype"].where(
-            pca_centroids["archetype"] == filter_archetype, ""
+    # Floating cluster name labels (no marker, just styled text annotations)
+    for _, row in pca_centroids.iterrows():
+        archetype = row["archetype"]
+        if filter_archetype is not None and filter_archetype != archetype:
+            continue
+        color = ARCHETYPE_COLORS.get(archetype, "#777")
+        fig.add_annotation(
+            x=row["pc1"],
+            y=row["pc2"],
+            text=f"<b>{archetype}</b>",
+            showarrow=False,
+            font=dict(size=12, color=color, family="Inter, system-ui, sans-serif"),
+            bgcolor="rgba(250,250,247,0.92)",
+            bordercolor=color,
+            borderwidth=1.5,
+            borderpad=4,
+            xanchor="center",
+            yanchor="middle",
         )
-    fig.add_trace(go.Scatter(
-        x=pca_centroids["pc1"],
-        y=pca_centroids["pc2"],
-        mode="markers+text",
-        showlegend=False,
-        marker=dict(symbol="x", size=18, color="black", line=dict(color="white", width=2)),
-        text=center_text,
-        textposition="top center",
-        textfont=dict(size=12, color="#0a2540", family="Inter, system-ui, sans-serif"),
-        hoverinfo="skip",
-    ))
 
     if selected_player:
         sel = assignments[assignments["Player"] == selected_player]
