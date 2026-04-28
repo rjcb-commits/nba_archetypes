@@ -88,13 +88,14 @@ def main():
     # Similar players in cluster (5 closest by feature distance)
     st.write(f"**Five closest players to {selected} within cluster {selected_cluster}:**")
     cluster_members = assignments[assignments["cluster"] == selected_cluster].copy()
-    selected_features = selected_row[features].to_numpy()
+    selected_features = selected_row[features].to_numpy(dtype=float)
+    member_features = cluster_members[features].to_numpy(dtype=float)
     cluster_members["distance"] = np.linalg.norm(
-        cluster_members[features].to_numpy() - selected_features, axis=1
+        member_features - selected_features, axis=1
     )
     closest = (
         cluster_members[cluster_members["Player"] != selected]
-        .nsmallest(5, "distance")[["Player", "Pos", "distance"] + features]
+        .nsmallest(5, "distance")[["Player", "Team", "distance"] + features]
         .round(2)
     )
     st.dataframe(closest, use_container_width=True)
@@ -106,7 +107,7 @@ def main():
         x="pc1",
         y="pc2",
         color=assignments["cluster"].astype(str),
-        hover_data=["Player", "Pos"],
+        hover_data=["Player", "Team"],
         labels={"color": "Cluster"},
     )
     selected_xy = assignments[assignments["Player"] == selected]

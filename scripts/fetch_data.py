@@ -1,10 +1,11 @@
-"""Pull NBA per-100-possessions and advanced stats from basketball-reference for a season.
+"""Pull NBA per-100-possessions and advanced stats from stats.nba.com via nba_api.
 
-basketball-reference rate-limits to ~1 request per 6 seconds, so we sleep between calls.
-Outputs raw CSVs to data/raw/ that the prepare step consumes.
+Uses the official NBA Stats API (wrapped by the nba_api package) which is more
+reliable than scraping basketball-reference (which blocks datacenter IPs).
 
 Usage:
     python scripts/fetch_data.py --season 2025
+    # 2025 means the 2024-25 season (season ending year)
 """
 from __future__ import annotations
 
@@ -13,42 +14,33 @@ import time
 from pathlib import Path
 
 import pandas as pd
-import requests
+from nba_api.stats.endpoints import LeagueDashPlayerStats
 
 REPO = Path(__file__).resolve().parent.parent
 RAW = REPO / "data" / "raw"
 
-BASE = "https://www.basketball-reference.com/leagues/NBA_{season}_{stat}.html"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; nba-archetypes/0.1; portfolio project)",
-}
-THROTTLE_SECONDS = 6
+THROTTLE_SECONDS = 2  # nba_api is more permissive than bb-ref
 
 
-def fetch_table(season: int, stat: str) -> pd.DataFrame:
-    """Fetch a single basketball-reference league stats table."""
-    url = BASE.format(season=season, stat=stat)
-    print(f"GET {url}")
-    response = requests.get(url, headers=HEADERS, timeout=30)
-    response.raise_for_status()
+def season_str(season_ending: int) -> str:
+    """Convert season ending year (e.g., 2025) to NBA's format (e.g., '2024-25')."""
+    return f"{season_ending - 1}-{str(season_ending)[-2:]}"
 
-    # basketball-reference wraps the table in HTML comments inside the page;
-    # pandas.read_html still finds it via the table elements
-    tables = pd.read_html(response.text)
-    if not tables:
-        raise RuntimeError(f"No tables found at {url}")
 
-    df = tables[0]
+def fetch_measure(season: str, measure: str) -> pd.DataFrame:
+    """Fetch a stats table for the season and measure type.
 
-    # The header row repeats every ~25 rows; drop those duplicate header rows
-    df = df[df["Player"] != "Player"].reset_index(drop=True)
-
-    # Cast numeric columns where possible
-    for col in df.columns:
-        if col in ("Player", "Pos", "Tm", "Team", "Awards"):
-            continue
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
+    measure: 'Advanced', 'Per100Possessions', 'Base', 'Misc', etc.
+    """
+    print(f"Fetching {measure} for {season}...")
+    endpoint = LeagueDashPlayerStats(
+        season=season,
+        measure_type_detailed_defense=measure,
+        per_mode_detailed="Per100Possessions" if measure == "Base" else "Totals",
+        timeout=30,
+    )
+    df = endpoint.get_data_frames()[0]
+    print(f"  got {len(df):,} rows, {len(df.columns)} columns")
     return df
 
 
@@ -59,15 +51,20 @@ def main():
     args = parser.parse_args()
 
     RAW.mkdir(parents=True, exist_ok=True)
+    season = season_str(args.season)
 
-    for stat in ("per_poss", "advanced"):
-        df = fetch_table(args.season, stat)
-        out = RAW / f"{args.season}_{stat}.csv"
-        df.to_csv(out, index=False)
-        print(f"  wrote {out} ({len(df):,} rows)")
-        time.sleep(THROTTLE_SECONDS)
+    # Per-100 base stats (counting stats normalized per 100 possessions)
+    per100 = fetch_measure(season, "Base")
+    per100.to_csv(RAW / f"{args.season}_per100.csv", index=False)
+    print(f"  wrote {RAW / f'{args.season}_per100.csv'}")
+    time.sleep(THROTTLE_SECONDS)
 
-    print(f"\nDone. Raw stats for {args.season} in {RAW}")
+    # Advanced stats (TS%, USG%, ratings, etc.)
+    advanced = fetch_measure(season, "Advanced")
+    advanced.to_csv(RAW / f"{args.season}_advanced.csv", index=False)
+    print(f"  wrote {RAW / f'{args.season}_advanced.csv'}")
+
+    print(f"\nDone. Raw stats for {args.season} ({season}) in {RAW}")
 
 
 if __name__ == "__main__":

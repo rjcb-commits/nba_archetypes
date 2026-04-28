@@ -1,7 +1,6 @@
 """Join per-100-possessions and advanced stats, filter to qualifying players, build the feature matrix.
 
-Outputs a parquet file at data/prepared/{season}_features.parquet that the
-clustering step consumes.
+Uses nba_api column naming convention (different from basketball-reference).
 
 Usage:
     python scripts/prepare_data.py --season 2025
@@ -18,32 +17,21 @@ REPO = Path(__file__).resolve().parent.parent
 RAW = REPO / "data" / "raw"
 OUT = REPO / "data" / "prepared"
 
-# Features used for clustering. All are per-100-possessions or advanced rates,
-# i.e., volume-normalized. Raw counting stats would bias toward starters with
-# heavy minutes regardless of their playing style.
+# Features used for clustering. Source columns (nba_api naming):
+#   per100 table   -> already per-100-possessions when fetched with that per_mode
+#   advanced table -> already in rate / pct form
 FEATURES = [
-    # Shot mix (what kind of shots they take)
-    "3PA_per100",
-    "FTA_per100",
-
-    # Scoring efficiency
-    "TS%",
-    "eFG%",
-
-    # Playmaking
-    "AST_per100",
-    "TOV_per100",
-
-    # Rebounding split (offensive vs defensive tells you a lot about role)
-    "ORB%",
-    "DRB%",
-
-    # Defense
-    "STL_per100",
-    "BLK_per100",
-
-    # Usage and load
-    "USG%",
+    "3PA_per100",   # FG3A from per100
+    "FTA_per100",   # FTA from per100
+    "TS_PCT",       # advanced
+    "EFG_PCT",      # advanced
+    "AST_per100",   # AST from per100
+    "TOV_per100",   # TOV from per100
+    "OREB_PCT",     # advanced
+    "DREB_PCT",     # advanced
+    "STL_per100",   # STL from per100
+    "BLK_per100",   # BLK from per100
+    "USG_PCT",      # advanced
 ]
 
 
@@ -60,53 +48,68 @@ def parse_args():
 def main():
     args = parse_args()
 
-    per_poss_path = RAW / f"{args.season}_per_poss.csv"
-    advanced_path = RAW / f"{args.season}_advanced.csv"
+    per100_path = RAW / f"{args.season}_per100.csv"
+    adv_path = RAW / f"{args.season}_advanced.csv"
 
-    if not per_poss_path.exists() or not advanced_path.exists():
+    if not per100_path.exists() or not adv_path.exists():
         raise FileNotFoundError(
             f"Run fetch_data.py --season {args.season} first."
         )
 
-    per_poss = pd.read_csv(per_poss_path)
-    advanced = pd.read_csv(advanced_path)
+    per100 = pd.read_csv(per100_path)
+    advanced = pd.read_csv(adv_path)
+    print(f"Loaded per100 ({len(per100):,} rows) and advanced ({len(advanced):,} rows)")
 
-    # basketball-reference uses team abbrev "TOT" for traded players (combined row).
-    # Keep only the TOT row when a player was traded mid-season; otherwise their
-    # single-team row.
-    per_poss = _dedupe_traded(per_poss)
-    advanced = _dedupe_traded(advanced)
+    # Rename per100 counting stats so they don't collide with advanced
+    per100_renamed = per100.rename(columns={
+        "FG3A": "3PA_per100",
+        "FTA": "FTA_per100",
+        "AST": "AST_per100",
+        "TOV": "TOV_per100",
+        "STL": "STL_per100",
+        "BLK": "BLK_per100",
+    })
 
-    # Rename per-100-possessions counting stats so they don't collide with advanced
-    rename_per100 = {c: f"{c}_per100" for c in
-                     ["FG", "FGA", "3P", "3PA", "FT", "FTA",
-                      "ORB", "DRB", "TRB", "AST", "STL", "BLK", "TOV", "PTS"]}
-    per_poss = per_poss.rename(columns=rename_per100)
-
-    # Merge on player + position + age (a player has one row in each table)
-    merged = per_poss.merge(
-        advanced[["Player", "Pos", "Age", "G", "MP", "TS%", "eFG%",
-                  "ORB%", "DRB%", "USG%"]],
-        on=["Player", "Pos", "Age"],
-        suffixes=("_pp", ""),
+    # Pull GP and MIN from advanced (per-game minutes), join on PLAYER_ID
+    merged = per100_renamed.merge(
+        advanced[["PLAYER_ID", "TS_PCT", "EFG_PCT", "USG_PCT",
+                  "OREB_PCT", "DREB_PCT", "AST_PCT"]],
+        on="PLAYER_ID",
         how="inner",
     )
     print(f"Merged rows: {len(merged):,}")
 
+    # Compute MPG from advanced's MIN (which is per-game in nba_api advanced output)
+    # Note: per100's MIN is per-100-possessions so we don't use it for the filter.
+    # Pull per-game MIN from a fresh advanced lookup since we already have GP from per100.
+    merged = merged.merge(
+        advanced[["PLAYER_ID", "MIN"]].rename(columns={"MIN": "MIN_advanced"}),
+        on="PLAYER_ID",
+        how="left",
+    )
+    merged["MPG"] = merged["MIN_advanced"]  # advanced "MIN" is per-game
+
     # Apply qualifying filter
-    mpg = merged["MP"] / merged["G"]
-    qualified = merged[(merged["G"] >= args.min_games) & (mpg >= args.min_mpg)].copy()
-    print(f"After filter (games >= {args.min_games}, MPG >= {args.min_mpg}): "
+    qualified = merged[
+        (merged["GP"] >= args.min_games) & (merged["MPG"] >= args.min_mpg)
+    ].copy()
+    print(f"After filter (GP >= {args.min_games}, MPG >= {args.min_mpg}): "
           f"{len(qualified):,} qualifying players")
 
-    # Keep only the columns we need for clustering + identifying
-    keep = ["Player", "Pos", "Age", "G", "MP"] + FEATURES
+    keep = ["PLAYER_ID", "PLAYER_NAME", "TEAM_ABBREVIATION", "AGE",
+            "GP", "MPG"] + FEATURES
     missing = [c for c in keep if c not in qualified.columns]
     if missing:
-        raise KeyError(f"Missing expected columns: {missing}\n"
-                       f"Available: {sorted(qualified.columns)}")
+        raise KeyError(
+            f"Missing expected columns: {missing}\n"
+            f"Available: {sorted(qualified.columns)}"
+        )
 
     out_df = qualified[keep].dropna(subset=FEATURES).reset_index(drop=True)
+    out_df = out_df.rename(columns={
+        "PLAYER_NAME": "Player",
+        "TEAM_ABBREVIATION": "Team",
+    })
     print(f"After dropping rows with missing features: {len(out_df):,}")
 
     OUT.mkdir(parents=True, exist_ok=True)
@@ -114,17 +117,6 @@ def main():
     out_df.to_parquet(out_path, index=False)
     print(f"\nWrote {out_path}")
     print(f"Features: {FEATURES}")
-
-
-def _dedupe_traded(df: pd.DataFrame) -> pd.DataFrame:
-    """For traded players, basketball-reference creates one TOT row plus rows per team.
-    Keep only TOT when present; otherwise the single team row.
-    """
-    counts = df.groupby("Player").size()
-    multi = counts[counts > 1].index
-    single = df[~df["Player"].isin(multi)]
-    tot_rows = df[df["Player"].isin(multi) & (df["Tm"] == "TOT")]
-    return pd.concat([single, tot_rows], ignore_index=True)
 
 
 if __name__ == "__main__":
