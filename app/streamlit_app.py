@@ -434,22 +434,55 @@ def main():
         st.stop()
 
     features = bundle["features"]
-
     players = sorted(assignments["Player"].unique())
-    default_index = players.index("Nikola Jokić") if "Nikola Jokić" in players else 0
-    selected = st.sidebar.selectbox("Player", players, index=default_index)
+
+    # Initialize selected player in session state
+    if "selected_player" not in st.session_state:
+        st.session_state["selected_player"] = (
+            "Nikola Jokić" if "Nikola Jokić" in players else players[0]
+        )
+
+    # Apply any pending selection from a scatter click in the previous run
+    if "pending_player" in st.session_state:
+        pending = st.session_state.pop("pending_player")
+        if pending in players:
+            st.session_state["selected_player"] = pending
+
+    # Sidebar player picker, bound to session state via key
+    st.sidebar.selectbox(
+        "Player",
+        players,
+        index=players.index(st.session_state["selected_player"]),
+        key="selected_player",
+    )
+    selected = st.session_state["selected_player"]
     selected_row = assignments[assignments["Player"] == selected].iloc[0]
 
-    # Hero PCA scatter (filterable via cluster cards)
+    # Hero PCA scatter (filterable via cluster cards, click a dot to select that player)
     st.markdown("### The eight archetypes in PCA space")
     filter_archetype = st.session_state.get("filter_archetype")
+    caption_bits = ["Click any dot to select that player."]
     if filter_archetype:
-        st.caption(f"Filtered to **{filter_archetype}**. Click the card again to clear.")
-    st.plotly_chart(
+        caption_bits.append(f"Filtered to **{filter_archetype}**. Click the card's button again to clear.")
+    st.caption(" ".join(caption_bits))
+
+    event = st.plotly_chart(
         build_pca_figure(assignments, selected, filter_archetype),
         use_container_width=True,
         config={"displayModeBar": False},
+        on_select="rerun",
+        key="pca_scatter",
+        selection_mode="points",
     )
+
+    # Handle click on a dot
+    if event and event.get("selection", {}).get("points"):
+        for pt in event["selection"]["points"]:
+            cd = pt.get("customdata")
+            if cd and len(cd) > 0 and cd[0] and cd[0] != selected:
+                st.session_state["pending_player"] = cd[0]
+                st.rerun()
+                break
 
     # Cluster cards (clickable)
     st.markdown("### Archetype reference")
