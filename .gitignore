@@ -12,7 +12,8 @@ env/
 # Data and outputs (regenerable, large)
 data/raw/
 data/prepared/
-outputs/
+outputs/figures/
+# outputs/models/ is tracked so the deployed Streamlit app can load them
 
 # Jupyter
 .ipynb_checkpoints/
