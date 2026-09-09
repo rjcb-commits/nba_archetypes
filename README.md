@@ -2,7 +2,7 @@
 
 Unsupervised clustering of NBA players using per-100-possession and advanced stats. Surfaces the player archetypes that actually exist in the modern game, which look different from the traditional five-position framework (PG / SG / SF / PF / C).
 
-**Live demo:** _coming soon (Streamlit Community Cloud)_
+**Live demo:** [nbaarchetypes.streamlit.app](https://nbaarchetypes.streamlit.app/)
 
 ## The question
 
